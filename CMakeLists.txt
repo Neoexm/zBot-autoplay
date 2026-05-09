@@ -49,7 +49,10 @@ CPMAddPackage(
     PATCH_COMMAND ${CMAKE_COMMAND} -DGD_IMGUI_COCOS_SOURCE_DIR=<SOURCE_DIR> -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_gd_imgui_cocos.cmake
 )
 
-target_compile_definitions(${PROJECT_NAME} PRIVATE MOD_VERSION="${CMAKE_PROJECT_VERSION}")
+target_compile_definitions(${PROJECT_NAME} PRIVATE
+    MOD_VERSION="${CMAKE_PROJECT_VERSION}"
+    AUTOBOT_WORKSPACE_SRC_DIR="${CMAKE_CURRENT_SOURCE_DIR}/src"
+)
 
 if (WIN32)
     target_link_libraries(${PROJECT_NAME} imgui-cocos libGDR)

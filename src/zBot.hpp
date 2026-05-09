@@ -91,12 +91,11 @@ public:
 
     // --- Autonomous bot state ---
     bool autoBotEnabled = false;   ///< Master toggle for autonomous play mode
-    bool autoBotUsePlanner = false;
     bool autoBotExperimentalMultiMode = false;
     bool autoBotLogUnknownObjects = false;
     bool autoBotApproximateCollisionFallback = true;
-    float autoBotPlannerHorizonSeconds = 1.0f;
-    int autoBotCubeTimingSafetyTicks = 12;
+    bool autoBotValidateCubePhysics = false;
+    int autoBotCubeTimingSafetyTicks = 20;
 
     // -----------------------------------------------------------------------
     // Helpers

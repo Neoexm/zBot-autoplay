@@ -7,19 +7,43 @@
 #include <cmath>
 #include <limits>
 #include <string>
+#include <vector>
 
 using namespace geode::prelude;
 
 namespace autobot {
 
-constexpr float kDefaultCubeGravity = -0.958199f;
+constexpr float kDefaultCubeGravity = 0.958199f;
 constexpr float kDefaultJumpVelocity = 11.1803f;
 constexpr float kDefaultMiniJumpVelocity = 9.4f;
-constexpr float kHalfSpeedUnits = 5.77f;
+constexpr float kHalfSpeedUnits = 2.885f;
 constexpr float kNormalSpeedUnits = 5.77f;
 constexpr float kDoubleSpeedUnits = 11.54f;
 constexpr float kTripleSpeedUnits = 15.38f;
 constexpr float kQuadSpeedUnits = 19.23f;
+constexpr float kHalfSpeedRatio = 0.5f;
+constexpr float kNormalSpeedRatio = 1.0f;
+constexpr float kDoubleSpeedRatio = 2.0f;
+constexpr float kTripleSpeedRatio = 8.0f / 3.0f;
+constexpr float kQuadSpeedRatio = 10.0f / 3.0f;
+constexpr float kJumpPositionScale = 0.9f;
+constexpr float kCubeTerminalVelocity = 15.0f;
+constexpr float kRollingCubePlannerHorizonSeconds = 1.5f;
+constexpr int kDefaultCubeTimingSafetyTicks = 20;
+constexpr int kMaxCubeTimingSafetyTicks = 30;
+constexpr int kCubeProactivePlanTicks = 40;
+constexpr int kCubeDropWaitImminentThreshold = 24;
+constexpr int kSyntheticDefaultGroundSupportUID = -2;
+constexpr float kLikelyDefaultGroundY = 90.f;
+constexpr float kDefaultGroundBandTolerance = 28.f;
+constexpr double kPlannerSoftBudgetMs = 2.0;
+constexpr double kPlannerHardBudgetMs = 5.0;
+constexpr int kPlannerNormalMaxCandidates = 64;
+constexpr int kPlannerComplexMaxCandidates = 128;
+constexpr int kPlannerNormalMaxHorizonTicks = 240;
+constexpr int kPlannerComplexMaxHorizonTicks = 360;
+constexpr int kPlannerClearanceShortlist = 12;
+constexpr std::size_t kPlannerRecentEventCapacity = 480;
 
 enum class GameMode : int {
     Cube = 0,
@@ -45,6 +69,17 @@ enum class CollisionApproximation : int {
     Unknown = 0,
     GameRect,
     FallbackAABB,
+};
+
+enum class SupportSource : int {
+    None = 0,
+    Solid,
+    DefaultGround,
+};
+
+enum class XSpeedUnitMode : int {
+    ProgressFrame = 0,
+    SimTick,
 };
 
 enum class OrbKind : int {
@@ -164,16 +199,52 @@ struct CachedLevelObject {
     }
 };
 
+struct NearbyObjectSet {
+    std::vector<CachedLevelObject const*> all;
+    std::vector<CachedLevelObject const*> solids;
+    std::vector<CachedLevelObject const*> hazards;
+    std::vector<CachedLevelObject const*> interactives;
+    std::vector<CachedLevelObject const*> orbs;
+    std::vector<CachedLevelObject const*> pads;
+    std::vector<CachedLevelObject const*> portals;
+
+    void clear() {
+        all.clear();
+        solids.clear();
+        hazards.clear();
+        interactives.clear();
+        orbs.clear();
+        pads.clear();
+        portals.clear();
+    }
+
+    std::size_t interactiveCount() const {
+        return interactives.size();
+    }
+};
+
 struct PlayerSnapshot {
     int frame = 0;
+    int progressFrameDelta = 0;
+    int captureTickDelta = 0;
     float x = 0.f;
     float y = 0.f;
+    float deltaTime = 0.f;
+    float jumpUpdateDt = 0.f;
+    float rawXDelta = 0.f;
     float observedXSpeed = 0.f;
+    float observedXSpeedPerProgressFrame = 0.f;
+    float observedXSpeedPerSimTick = 0.f;
+    float xSpeedUsedBySimulator = 0.f;
+    float baseXSpeed = 0.f;
+    float currentXVelocity = 0.f;
+    float speedRatio = kNormalSpeedRatio;
     float yVelocity = 0.f;
     float playerSpeed = 0.f;
     float vehicleSize = 1.f;
     double speedMultiplier = 0.0;
     float gravityPerTick = kDefaultCubeGravity;
+    float gravityMagnitude = kDefaultCubeGravity;
     bool gravityApproximate = true;
     bool speedApproximate = true;
     bool onGround = false;
@@ -189,14 +260,21 @@ struct PlayerSnapshot {
     bool twoPlayerMode = false;
     float slopeAngle = 0.f;
     GameMode mode = GameMode::Cube;
+    XSpeedUnitMode xSpeedUnitMode = XSpeedUnitMode::SimTick;
 };
 
 struct SimState {
     float x = 0.f;
     float y = 0.f;
     float xSpeed = 0.f;
+    float baseXSpeed = 0.f;
+    float currentXVelocity = 0.f;
+    float speedRatio = kNormalSpeedRatio;
+    float deltaTime = 0.f;
+    float jumpUpdateDt = 0.f;
     float yVelocity = 0.f;
     float gravityPerTick = kDefaultCubeGravity;
+    float gravityMagnitude = kDefaultCubeGravity;
     bool onGround = false;
     bool gravFlip = false;
     bool isMini = false;
@@ -211,6 +289,9 @@ struct SimState {
     int lastPortalUID = -1;
     int activatedOrbUID = -1;
     int currentSupportUID = -1;
+    bool hasDefaultGroundSupport = false;
+    float defaultGroundY = 0.f;
+    SupportSource supportSource = SupportSource::None;
     CollisionApproximation worstApproximation = CollisionApproximation::GameRect;
 
     float halfWidth() const {
@@ -223,20 +304,85 @@ struct SimState {
 };
 
 struct PlannerConfig {
-    bool rollingPlannerEnabled = false;
     bool experimentalMultiMode = false;
     bool useApproximateCollisionFallback = true;
-    float horizonSeconds = 1.0f;
+    float horizonSeconds = kRollingCubePlannerHorizonSeconds;
     float ticksPerSecond = 240.0f;
-    int cubeTimingSafetyTicks = 12;
+    int cubeTimingSafetyTicks = kDefaultCubeTimingSafetyTicks;
+};
+
+struct CubeCandidate {
+    std::vector<int> tapTicks;
+    bool activateFirstOrb = false;
+    std::string label = "candidate";
+};
+
+struct HazardCollisionInfo {
+    bool valid = false;
+    int objectID = 0;
+    int uniqueID = -1;
+    CachedObjectCategory category = CachedObjectCategory::Unknown;
+    RectF objectBounds;
+    RectF playerBounds;
+    bool likelySpike = false;
+    CollisionApproximation approximation = CollisionApproximation::Unknown;
+    std::string collisionType;
+};
+
+struct CubeSimulationResult {
+    CubeCandidate candidate;
+    bool dies = false;
+    bool landedSafely = false;
+    bool hazardClearanceComputed = false;
+    bool hazardClearanceApproximate = false;
+    bool hasDefaultGroundSupport = false;
+    bool firstTapGrounded = false;
+    bool requiresFutureTap = false;
+    bool firstTapOnlyDies = false;
+    int futureTapCount = 0;
+    int initialSupportUID = -1;
+    int deathTick = -1;
+    int supportLostTick = -1;
+    int fallStartedTick = -1;
+    int landedTick = -1;
+    int landingSupportUID = -1;
+    int activatedOrbUID = -1;
+    int apexTick = -1;
+    float defaultGroundY = 0.f;
+    float score = -1000000.f;
+    float minHazardClearance = std::numeric_limits<float>::infinity();
+    float apexY = 0.f;
+    SupportSource initialSupportSource = SupportSource::None;
+    SupportSource finalSupportSource = SupportSource::None;
+    HazardCollisionInfo hazardCollision;
+    std::string deathReason;
+    SimState finalState;
+};
+
+struct CubeTraceSample {
+    int tickOffset = 0;
+    float x = 0.f;
+    float y = 0.f;
+    float yVelocity = 0.f;
+    bool onGround = false;
+};
+
+struct CubeSimulationTrace {
+    CubeSimulationResult result;
+    std::vector<CubeTraceSample> samples;
 };
 
 struct PlannerDecision {
     bool shouldPress = false;
     bool valid = false;
     bool emergency = false;
+    bool rollingPlanner = true;
     bool noInputLandedSafely = false;
     bool noInputWon = false;
+    bool proactivePlanTriggered = false;
+    bool tapZeroIsSafe = false;
+    bool latestSafeWithinSafetyThreshold = false;
+    bool pressNowBecauseSafetyThreshold = false;
     bool safetyBufferedTimingUsed = false;
     bool framePerfectFallbackUsed = false;
     bool safeTapSparse = false;
@@ -245,16 +391,45 @@ struct PlannerDecision {
     bool immediatePressRequired = false;
     bool selectedTapClearanceComputed = false;
     bool selectedTapClearanceApproximate = false;
+    bool dropGateCheckedBeforeJumpSelection = false;
+    bool dropGateAccepted = false;
+    bool dropGateComparedTapZero = false;
+    bool tapZeroBeatsNoJump = false;
+    bool hasDefaultGroundSupport = false;
+    bool plannerBudgetExceeded = false;
+    bool usedBudgetFallback = false;
+    bool usedFastPath = false;
+    bool localTapZeroIsSafe = false;
+    bool localLatestSafeWithinSafetyThreshold = false;
+    bool pressNowBecauseLocalSafetyThreshold = false;
+    bool tap0SurvivesLocalHazard = false;
+    bool tapZeroSurvivesFullHorizon = false;
+    bool nearestHazardLikelySpike = false;
+    bool selectedTapGrounded = false;
+    bool selectedRequiresFutureTap = false;
+    bool futureTapCommitEnabled = false;
+    int currentSupportUID = -1;
+    int selectedFutureTapCount = 0;
+    int selectedSecondTap = -1;
     int candidateCount = 0;
+    int horizonTicks = 0;
     int chosenDelay = -1;
     int noJumpDeathTick = -1;
     int noInputSupportLostTick = -1;
     int noInputFallStartedTick = -1;
     int noInputLandedTick = -1;
     int noInputLandingSupportUID = -1;
+    int proactivePlanTicks = 0;
+    int localHazardWindowTicks = 0;
+    int nearbyHazards = 0;
+    int nearbySolids = 0;
+    int nearbyInteractives = 0;
     int safeTapCount = 0;
+    int localSafeTapCount = 0;
     int earliestSafeTap = -1;
     int latestSafeTap = -1;
+    int localEarliestSafeTap = -1;
+    int localLatestSafeTap = -1;
     int safeWindowWidth = 0;
     int configuredSafetyTicks = 0;
     int effectiveSafetyTicks = 0;
@@ -269,13 +444,41 @@ struct PlannerDecision {
     int maxTapCountTested = 0;
     int predictedDeathTick = -1;
     int activatedOrbUID = -1;
+    int tap0DeathTick = -1;
+    int simulatedCandidateCount = 0;
+    int simulatedStepCount = 0;
+    int hazardChecks = 0;
+    int solidChecks = 0;
+    int clearanceChecks = 0;
+    int earlyExitCount = 0;
+    int nearestHazardObjectID = 0;
+    int nearestHazardObjectUID = -1;
+    int tap0ApexTick = -1;
+    int tap0LandedTick = -1;
+    int selectedApexTick = -1;
+    int selectedLandedTick = -1;
     float nearestHazardDistance = std::numeric_limits<float>::infinity();
     float timeToHazard = std::numeric_limits<float>::infinity();
     float leadFrames = 0.f;
+    float configuredHorizonSeconds = kRollingCubePlannerHorizonSeconds;
     float horizonSeconds = 0.f;
+    float defaultGroundY = 0.f;
+    float nearestHazardLeft = 0.f;
+    float nearestHazardRight = 0.f;
+    float nearestHazardBottom = 0.f;
+    float nearestHazardTop = 0.f;
+    float tap0ApexY = 0.f;
+    float selectedApexY = 0.f;
+    double planTimeMs = 0.0;
+    double tickTimeMs = 0.0;
     CollisionApproximation collisionApproximation = CollisionApproximation::Unknown;
+    CollisionApproximation nearestHazardApproximation = CollisionApproximation::Unknown;
+    SupportSource supportSource = SupportSource::None;
     float selectedTapScore = -1000000.f;
     float selectedTapClearance = std::numeric_limits<float>::infinity();
+    HazardCollisionInfo noJumpHazardCollision;
+    HazardCollisionInfo tap0HazardCollision;
+    HazardCollisionInfo selectedHazardCollision;
     std::string reason;
     std::string selectedTapLabel;
     std::string noJumpDeathReason;
@@ -283,6 +486,11 @@ struct PlannerDecision {
     std::string noPressGateReason;
     std::string noInputRejectedReason;
     std::string immediateTapSelectionReason;
+    std::string dropGateRejectedReason;
+    std::string expensivePlanningReason;
+    std::string tap0DeathReason;
+    std::string selectedDecisionSource;
+    std::string selectedRejectedReason;
 };
 
 inline char const* gameModeName(GameMode mode) {
@@ -304,6 +512,33 @@ inline char const* collisionApproximationName(CollisionApproximation approximati
         case CollisionApproximation::GameRect:     return "game-rect";
         case CollisionApproximation::FallbackAABB: return "fallback-aabb";
         default:                                   return "unknown";
+    }
+}
+
+inline char const* supportSourceName(SupportSource source) {
+    switch (source) {
+        case SupportSource::Solid:         return "solid";
+        case SupportSource::DefaultGround: return "default";
+        default:                           return "none";
+    }
+}
+
+inline char const* xSpeedUnitModeName(XSpeedUnitMode mode) {
+    switch (mode) {
+        case XSpeedUnitMode::ProgressFrame: return "progress-frame";
+        case XSpeedUnitMode::SimTick:       return "sim-tick";
+        default:                            return "sim-tick";
+    }
+}
+
+inline char const* cachedObjectCategoryName(CachedObjectCategory category) {
+    switch (category) {
+        case CachedObjectCategory::Hazard: return "hazard";
+        case CachedObjectCategory::Solid:  return "solid";
+        case CachedObjectCategory::Orb:    return "orb";
+        case CachedObjectCategory::Pad:    return "pad";
+        case CachedObjectCategory::Portal: return "portal";
+        default:                           return "unknown";
     }
 }
 
@@ -408,13 +643,13 @@ inline GameMode gameModeFromPortalKind(PortalKind portalKind) {
 
 inline float speedUnitsFromPortalKind(PortalKind portalKind) {
     switch (portalKind) {
-        case PortalKind::SpeedHalf:   return kHalfSpeedUnits;
-        case PortalKind::SpeedDouble: return kDoubleSpeedUnits;
-        case PortalKind::SpeedTriple: return kTripleSpeedUnits;
-        case PortalKind::SpeedQuad:   return kQuadSpeedUnits;
+        case PortalKind::SpeedHalf:   return kHalfSpeedRatio;
+        case PortalKind::SpeedDouble: return kDoubleSpeedRatio;
+        case PortalKind::SpeedTriple: return kTripleSpeedRatio;
+        case PortalKind::SpeedQuad:   return kQuadSpeedRatio;
         case PortalKind::SpeedNormal:
         default:
-            return kNormalSpeedUnits;
+            return kNormalSpeedRatio;
     }
 }
 

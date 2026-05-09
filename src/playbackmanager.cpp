@@ -28,14 +28,13 @@ class $modify(PBGJBaseGameLayer, GJBaseGameLayer) {
         bool autoBotDriving = mgr->autoBotEnabled && mgr->state != PLAYBACK && activePlayLayer && !activeLayerLocked && !playLayerLocked;
 
         if (autoBotDriving) {
-            if ((autoBotProcessLogCounter++ % 30) == 0) {
+            if ((autoBotProcessLogCounter++ % 240) == 0) {
                 log::info(
-                    "[AutoBot] processCommands pre | frame={} delta={:.6f} halfTick={} lastTick={} planner={} replayLoaded={}",
+                    "[AutoBot] processCommands pre | frame={} delta={:.6f} halfTick={} lastTick={} rollingPlanner=1 decisionHorizonSeconds=1.5 replayLoaded={}",
                     m_gameState.m_currentProgress,
                     delta,
                     isHalfTick,
                     isLastTick,
-                    mgr->autoBotUsePlanner,
                     mgr->currentReplay != nullptr
                 );
             }

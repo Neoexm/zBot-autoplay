@@ -188,6 +188,9 @@ void GUI::renderAutoBotPanel() {
 
             std::ostringstream debugLine;
             debugLine << "enabled=" << mgr->autoBotEnabled
+                      << " rollingPlanner=1"
+                      << " decisionHorizonSeconds=1.5"
+                      << " cubeTimingSafetyTicks=" << mgr->autoBotCubeTimingSafetyTicks
                       << " state=" << static_cast<int>(mgr->state)
                       << " playLayerPresent=" << (PlayLayer::get() != nullptr);
             autobot::AutoBotDebug::get()->logEvent("toggle-gui", debugLine.str());
@@ -200,33 +203,12 @@ void GUI::renderAutoBotPanel() {
             autobot::AutoBot::get()->warmupLevel(static_cast<GJBaseGameLayer*>(play), 1.f / 240.f);
         }
         log::info(
-            "[AutoBot] Toggled via GUI | enabled={} state={} playLayerPresent={}",
+            "[AutoBot] Toggled via GUI | enabled={} rollingPlanner=1 decisionHorizonSeconds=1.5 cubeTimingSafetyTicks={} state={} playLayerPresent={}",
             mgr->autoBotEnabled,
+            mgr->autoBotCubeTimingSafetyTicks,
             static_cast<int>(mgr->state),
             PlayLayer::get() != nullptr
         );
-    }
-
-    if (ImGui::Checkbox("Use Planner", &mgr->autoBotUsePlanner)) {
-        autobot::AutoBot::get()->resetState();
-
-        if (mgr->autoBotFileLogging) {
-            std::ostringstream debugLine;
-            debugLine << "plannerEnabled=" << mgr->autoBotUsePlanner
-                      << " autoBotEnabled=" << mgr->autoBotEnabled
-                      << " playLayerPresent=" << (PlayLayer::get() != nullptr);
-            autobot::AutoBotDebug::get()->logEvent("planner-toggle", debugLine.str());
-        }
-
-        if (mgr->autoBotEnabled) {
-            if (auto* play = PlayLayer::get()) {
-                autobot::AutoBot::get()->warmupLevel(static_cast<GJBaseGameLayer*>(play), 1.f / 240.f);
-            }
-        }
-    }
-
-    if (ImGui::SliderFloat("Planner Horizon (s)", &mgr->autoBotPlannerHorizonSeconds, 0.5f, 1.5f, "%.2f")) {
-        autobot::AutoBot::get()->resetState();
     }
 
     if (ImGui::SliderInt("Cube Timing Safety", &mgr->autoBotCubeTimingSafetyTicks, 0, 30)) {
@@ -245,7 +227,12 @@ void GUI::renderAutoBotPanel() {
         autobot::AutoBot::get()->resetState();
     }
 
-    ImGui::TextWrapped("Mode: %s", mgr->autoBotUsePlanner ? "rolling planner" : "short-horizon cube planner");
+    if (ImGui::Checkbox("Validate Cube Physics", &mgr->autoBotValidateCubePhysics)) {
+        autobot::AutoBot::get()->resetState();
+    }
+
+    ImGui::TextWrapped("Mode: rolling cube planner");
+    ImGui::TextWrapped("Decision Horizon: 1.50 s (fixed)");
     ImGui::TextWrapped("Cache Objects: %zu", autobot::AutoBot::get()->getCachedObjectCount());
     ImGui::TextWrapped("Nearby Objects: %zu", autobot::AutoBot::get()->getNearbyObjectCount());
     ImGui::TextWrapped("Last Decision: %s", autobot::AutoBot::get()->getLastDecisionReason().c_str());
